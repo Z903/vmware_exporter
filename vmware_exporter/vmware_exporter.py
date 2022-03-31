@@ -36,7 +36,7 @@ from itertools import chain
 # Twisted
 from twisted.web.server import Site, NOT_DONE_YET
 from twisted.web.resource import Resource
-from twisted.internet import reactor, endpoints, defer, threads
+from twisted.internet import reactor, endpoints, defer, threads, task
 
 # VMWare specific imports
 from pyVmomi import vim, vmodl
@@ -45,6 +45,10 @@ from pyVim import connect
 # Prometheus specific imports
 from prometheus_client.core import GaugeMetricFamily
 from prometheus_client import CollectorRegistry, generate_latest
+
+# Systemd
+if 'WATCHDOG_USEC' in os.environ:
+    import systemd.daemon
 
 from .helpers import batch_fetch_properties, get_bool_env
 from .defer import parallelize, run_once_property
@@ -2095,6 +2099,20 @@ def main(argv=None):
     logging.info("Starting web server on port {address}:{port}".format(address=args.address, port=args.port))
     endpoint = endpoints.TCP4ServerEndpoint(reactor, args.port, interface=args.address)
     endpoint.listen(factory)
+
+    # If the reactor stops or hangs
+    if 'WATCHDOG_USEC' in os.environ:
+
+        @task.LoopingCall
+        def notify_task():
+            systemd.daemon.notify(systemd.daemon.Notification.WATCHDOG)
+            
+        watchdog_sec = max(float(os.environ['WATCHDOG_USEC']) / 4000000.0, 1.0)
+        logging.info("Starting systemd notify every {sec:.2f}s".format(sec=watchdog_sec))
+
+        systemd.daemon.notify(systemd.daemon.Notification.READY)
+        notify_task.start(watchdog_sec)
+
     reactor.run()
 
 
